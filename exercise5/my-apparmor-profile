@@ -1,0 +1,29 @@
+#include <tunables/global>
+
+profile my-apparmor-profile flags=(attach_disconnected,mediate_deleted) {
+    #include <abstractions/base>
+
+    # Allow network operations required by Flask
+    network,
+
+    # Allow the Python runtime to execute
+    /usr/local/bin/python ix,
+    /usr/local/bin/python3 ix,
+    /usr/local/bin/python3.8 ix,
+
+    # Allow Python libraries and application files
+    /usr/local/lib/** mr,
+    /lib/** mr,
+    /app/ r,
+    /app/** r,
+
+    # Restrict selected files and executable paths for the lab tests
+    deny /etc/passwd r,
+    deny /etc/shadow r,
+    deny /bin/bash x,
+    deny /root/** rwklx,
+    deny /var/** rwklx,
+
+    # Deny administrative capability
+    deny capability sys_admin,
+}
