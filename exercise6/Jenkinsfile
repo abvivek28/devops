@@ -1,0 +1,66 @@
+﻿pipeline {
+    agent any
+
+    stages {
+        stage('Pre-check Docker') {
+            steps {
+                sh 'docker --version'
+                sh 'docker info'
+            }
+        }
+
+        stage('Validate Project') {
+            steps {
+                sh '''
+                    test -f /workspace/delivery_metrics.py
+                    test -f /workspace/requirements.txt
+                    test -f /workspace/Dockerfile
+                    python3 --version || true
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    cd /workspace
+                    docker build -t delivery-metrics:latest .
+                '''
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                sh '''
+                    docker rm -f delivery_metrics || true
+
+                    docker run -d \
+                        --name delivery_metrics \
+                        --network delivery-network \
+                        -p 8000:8000 \
+                        delivery-metrics:latest
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    sleep 5
+                    docker ps --filter "name=delivery_metrics"
+                    docker logs --tail 20 delivery_metrics
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Delivery monitoring deployment completed successfully.'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check the console output.'
+        }
+    }
+}
