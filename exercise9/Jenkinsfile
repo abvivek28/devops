@@ -2,33 +2,39 @@ pipeline {
     agent any
 
     environment {
-        APP_DIR = 'Exercises/Exercise-09'
         DEPLOY_DIR = "${WORKSPACE}/python-app-deploy"
     }
 
     stages {
         stage('Build') {
             steps {
-                echo 'Creating virtual environment and installing dependencies...'
-                sh '''
-                    cd "$APP_DIR"
-                    python3 -m venv venv
-
-                    if [ -f requirements.txt ]; then
-                        venv/bin/python -m pip install -r requirements.txt
-                    fi
-                '''
+                dir('python-flask-app') {
+                    echo 'Creating virtual environment and installing dependencies...'
+                    sh '''
+                        python3 -m venv .venv
+                        .venv/bin/python -m pip install --upgrade pip
+                        .venv/bin/python -m pip install -r requirements.txt
+                        .venv/bin/python -m pip install flake8
+                    '''
+                }
             }
         }
 
         stage('Test') {
             steps {
-                echo 'Running unit tests...'
-                sh '''
-                    cd "$APP_DIR"
-                    venv/bin/python -m unittest discover \
-                        -s . -p "test_*.py" -v
-                '''
+                dir('python-flask-app') {
+                    echo 'Running unit tests...'
+                    sh '.venv/bin/python -m unittest discover -s . -p "test_*.py"'
+                }
+            }
+        }
+
+        stage('Code Quality') {
+            steps {
+                dir('python-flask-app') {
+                    echo 'Running code quality checks...'
+                    sh '.venv/bin/flake8 app.py test_app.py'
+                }
             }
         }
 
@@ -37,40 +43,52 @@ pipeline {
                 echo 'Deploying application...'
                 sh '''
                     mkdir -p "$DEPLOY_DIR"
-                    cp "$APP_DIR/app.py" "$DEPLOY_DIR/"
 
-                    if [ -f "$APP_DIR/requirements.txt" ]; then
-                        cp "$APP_DIR/requirements.txt" "$DEPLOY_DIR/"
+                    if [ -f "$DEPLOY_DIR/app.pid" ]; then
+                        OLD_PID=$(cat "$DEPLOY_DIR/app.pid")
+                        if kill -0 "$OLD_PID" 2>/dev/null; then
+                            kill "$OLD_PID" || true
+                        fi
                     fi
+
+                    cp "$WORKSPACE/python-flask-app/app.py" "$DEPLOY_DIR/"
+                    cp "$WORKSPACE/python-flask-app/requirements.txt" "$DEPLOY_DIR/"
                 '''
             }
         }
 
         stage('Run Application') {
             steps {
-                echo 'Running application...'
+                echo 'Starting the deployed Flask application...'
                 sh '''
-                    cd "$DEPLOY_DIR"
+                    PYTHON="$WORKSPACE/python-flask-app/.venv/bin/python"
 
-                    nohup python3 app.py > app.log 2>&1 &
-                    echo $! > app.pid
+                    JENKINS_NODE_COOKIE=dontKillMe nohup "$PYTHON" \
+                        "$DEPLOY_DIR/app.py" \
+                        > "$DEPLOY_DIR/app.log" 2>&1 &
 
-                    sleep 2
-
-                    if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
-                        cat app.log
-                        exit 1
-                    fi
+                    echo $! > "$DEPLOY_DIR/app.pid"
                 '''
             }
         }
 
         stage('Test Application') {
             steps {
-                echo 'Testing application...'
+                echo 'Checking the deployed application over HTTP...'
                 sh '''
-                    cd "$APP_DIR"
-                    venv/bin/python test_app.py
+                    PYTHON="$WORKSPACE/python-flask-app/.venv/bin/python"
+
+                    for i in $(seq 1 15); do
+                        if "$PYTHON" -c "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:5000/', timeout=2); assert r.status == 200; assert r.read().decode() == 'Hello, Jenkins Multi-Stage Pipeline!'" 2>/dev/null; then
+                            echo "Application HTTP test passed!"
+                            exit 0
+                        fi
+                        sleep 1
+                    done
+
+                    echo "Application failed to respond correctly."
+                    cat "$DEPLOY_DIR/app.log"
+                    exit 1
                 '''
             }
         }
@@ -81,10 +99,7 @@ pipeline {
             echo 'Pipeline completed successfully!'
         }
         failure {
-            echo 'Pipeline failed. Check the logs for more details.'
-        }
-        always {
-            echo 'Pipeline execution finished.'
+            echo 'Pipeline failed. Check the console output and application logs.'
         }
     }
 }
